@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 app.use(cors());
@@ -10,15 +11,17 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-const MARZPAY_ACCESS_ID = process.env.MARZPAY_ACCESS_ID || '';
-const MARZPAY_ACCESS_TOKEN = process.env.MARZPAY_ACCESS_TOKEN || '';
-const MARZPAY_BASE_URL = process.env.MARZPAY_BASE_URL || 'https://wallet.wearemarz.com';
+// MarzPay — Base64 encoded API credentials
+const MARZPAY_API_CREDENTIALS = 'bWFyel9TTmdZMHRwb1FVcFk1WmNoOndIRWdTT0lhUjhCUjNMMDV2NlZFUHFzMTBOZFdNZzU4';
+const MARZPAY_BASE_URL = 'https://wallet.wearemarz.com/api/v1';
 
-const EGOSMS_USERNAME = process.env.EGOSMS_USERNAME || 'INFINITECH';
-const EGOSMS_PASSWORD = process.env.EGOSMS_PASSWORD || 'Moses,123##';
-const EGOSMS_SENDER = process.env.EGOSMS_SENDER || 'INFINITECH';
+// EgoSMS
+const EGOSMS_USERNAME = 'INFINITECH';
+const EGOSMS_PASSWORD = 'Moses,123##';
+const EGOSMS_SENDER = 'INFINITECH';
 
-const API_SECRET = process.env.API_SECRET || 'jubilee_proxy_secret_2024';
+// Proxy auth
+const API_SECRET = 'jubilee_proxy_secret_2024';
 
 // ─── AUTH MIDDLEWARE ─────────────────────────────────────────────────────────
 
@@ -36,80 +39,126 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'Jubilee Insurance Payment Proxy' });
 });
 
-// ─── MARZPAY: DISBURSE TO MOBILE MONEY ──────────────────────────────────────
+// ─── MARZPAY: COLLECT PAYMENT (Mobile Money) ────────────────────────────────
 
-app.post('/api/disburse', authenticate, async (req, res) => {
+app.post('/api/collect', authenticate, async (req, res) => {
   try {
-    const { phone_number, amount, claim_id, recipient_name } = req.body;
+    const { phone_number, amount, description, callback_url } = req.body;
 
-    if (!phone_number || !amount || !claim_id) {
-      return res.status(400).json({ error: 'Missing required fields: phone_number, amount, claim_id' });
+    if (!phone_number || !amount) {
+      return res.status(400).json({ error: 'Missing phone_number or amount' });
     }
 
-    // Normalize phone
-    let phone = phone_number.replace(/[\+\s\-]/g, '');
-    if (phone.startsWith('0')) phone = '256' + phone.substring(1);
-    else if (!phone.startsWith('256')) phone = '256' + phone;
+    // Normalize phone to +256 format
+    let phone = phone_number.replace(/[\s\-]/g, '');
+    if (phone.startsWith('0')) phone = '+256' + phone.substring(1);
+    else if (phone.startsWith('256')) phone = '+' + phone;
+    else if (!phone.startsWith('+')) phone = '+256' + phone;
 
-    console.log(`💰 Disbursing UGX ${amount} to ${phone} for claim #${claim_id}`);
+    // Generate unique UUID reference
+    const reference = uuidv4();
 
-    // MarzPay single-endpoint with module parameter
-    const payload = {
-      accessId: MARZPAY_ACCESS_ID,
-      accessToken: MARZPAY_ACCESS_TOKEN,
-      module: 'withdraw',
-      phone: phone,
-      amount: parseInt(amount),
-      reason: `Insurance Claim Payout - #${claim_id}`,
-      reference: `JUB-CLAIM-${claim_id}`,
-      narration: `Jubilee Insurance payout to ${recipient_name || phone}`,
-    };
+    console.log(`💰 Collecting UGX ${amount} from ${phone} | ref: ${reference}`);
 
-    const response = await fetch(MARZPAY_BASE_URL, {
+    const formData = new URLSearchParams();
+    formData.append('phone_number', phone);
+    formData.append('amount', String(parseInt(amount)));
+    formData.append('country', 'UG');
+    formData.append('reference', reference);
+    if (description) formData.append('description', description);
+    if (callback_url) formData.append('callback_url', callback_url);
+
+    const response = await fetch(`${MARZPAY_BASE_URL}/collect-money`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      headers: {
+        'Authorization': `Basic ${MARZPAY_API_CREDENTIALS}`,
+      },
+      body: formData,
     });
 
     const data = await response.json();
-    console.log(`💳 MarzPay response [${response.status}]:`, data);
+    console.log(`💳 MarzPay response [${response.status}]:`, JSON.stringify(data));
 
-    if (data.success || data.status === 'success' || response.status === 200) {
+    if (data.status === 'success') {
       return res.json({
         success: true,
-        transaction_id: data.transactionId || data.transaction_id || data.id || '',
-        message: data.message || 'Payment sent',
-        status: data.status || 'completed',
+        transaction_id: data.data?.transaction?.uuid || reference,
+        reference: reference,
+        message: data.message || 'Collection initiated',
+        status: data.data?.transaction?.status || 'processing',
       });
     }
 
     return res.status(400).json({
       success: false,
-      message: data.message || data.error || 'Payment failed',
+      message: data.message || 'Collection failed',
+      errors: data.errors || null,
     });
   } catch (err) {
-    console.error('❌ Disburse error:', err.message);
+    console.error('❌ Collect error:', err.message);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── MARZPAY: COLLECT VIA CARD ──────────────────────────────────────────────
+
+app.post('/api/collect-card', authenticate, async (req, res) => {
+  try {
+    const { amount, description, callback_url } = req.body;
+
+    if (!amount) {
+      return res.status(400).json({ error: 'Missing amount' });
+    }
+
+    const reference = uuidv4();
+
+    console.log(`💳 Card collection UGX ${amount} | ref: ${reference}`);
+
+    const response = await fetch(`${MARZPAY_BASE_URL}/collect-money`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${MARZPAY_API_CREDENTIALS}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        amount: parseInt(amount),
+        method: 'card',
+        reference: reference,
+        country: 'UG',
+        description: description || 'Premium payment',
+      }),
+    });
+
+    const data = await response.json();
+    console.log(`💳 Card response [${response.status}]:`, JSON.stringify(data));
+
+    if (data.status === 'success') {
+      return res.json({
+        success: true,
+        transaction_id: data.data?.transaction?.uuid || reference,
+        reference: reference,
+        redirect_url: data.data?.redirect_url || '',
+        message: data.message,
+      });
+    }
+
+    return res.status(400).json({ success: false, message: data.message });
+  } catch (err) {
+    console.error('❌ Card collect error:', err.message);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
 // ─── MARZPAY: CHECK TRANSACTION STATUS ──────────────────────────────────────
 
-app.get('/api/transaction/:id', authenticate, async (req, res) => {
+app.get('/api/transaction/:uuid', authenticate, async (req, res) => {
   try {
-    const { id } = req.params;
+    const { uuid } = req.params;
 
-    const payload = {
-      accessId: MARZPAY_ACCESS_ID,
-      accessToken: MARZPAY_ACCESS_TOKEN,
-      module: 'transactionStatus',
-      transactionId: id,
-    };
-
-    const response = await fetch(MARZPAY_BASE_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+    const response = await fetch(`${MARZPAY_BASE_URL}/collect-money/${uuid}`, {
+      headers: {
+        'Authorization': `Basic ${MARZPAY_API_CREDENTIALS}`,
+      },
     });
 
     const data = await response.json();
@@ -120,28 +169,31 @@ app.get('/api/transaction/:id', authenticate, async (req, res) => {
   }
 });
 
-// ─── MARZPAY: CHECK BALANCE ─────────────────────────────────────────────────
+// ─── MARZPAY: GET AVAILABLE SERVICES ────────────────────────────────────────
 
-app.get('/api/balance', authenticate, async (req, res) => {
+app.get('/api/services', authenticate, async (req, res) => {
   try {
-    const payload = {
-      accessId: MARZPAY_ACCESS_ID,
-      accessToken: MARZPAY_ACCESS_TOKEN,
-      module: 'balance',
-    };
-
-    const response = await fetch(MARZPAY_BASE_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+    const response = await fetch(`${MARZPAY_BASE_URL}/collect-money/services`, {
+      headers: {
+        'Authorization': `Basic ${MARZPAY_API_CREDENTIALS}`,
+      },
     });
 
     const data = await response.json();
     res.json(data);
   } catch (err) {
-    console.error('❌ Balance error:', err.message);
+    console.error('❌ Services error:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ─── MARZPAY: WEBHOOK RECEIVER ──────────────────────────────────────────────
+
+app.post('/api/webhook/marzpay', (req, res) => {
+  console.log('🔔 MarzPay webhook received:', JSON.stringify(req.body));
+  // TODO: Update Firestore payment status based on event_type
+  // collection.completed or collection.failed
+  res.status(200).json({ received: true });
 });
 
 // ─── EGOSMS: SEND SMS ────────────────────────────────────────────────────────
@@ -167,10 +219,7 @@ app.post('/api/sms', authenticate, async (req, res) => {
 
     console.log(`📨 EgoSMS response [${response.status}]: ${text}`);
 
-    res.json({
-      success: response.status === 200,
-      message: text,
-    });
+    res.json({ success: response.status === 200, message: text });
   } catch (err) {
     console.error('❌ SMS error:', err.message);
     res.status(500).json({ success: false, message: err.message });
