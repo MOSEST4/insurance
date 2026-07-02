@@ -10,10 +10,9 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-const MARZPAY_API_KEY = process.env.MARZPAY_API_KEY || '';
-const MARZPAY_API_SECRET = process.env.MARZPAY_API_SECRET || '';
-const MARZPAY_MERCHANT_ID = process.env.MARZPAY_MERCHANT_ID || '';
-const MARZPAY_BASE_URL = process.env.MARZPAY_BASE_URL || 'https://api.marzpay.co.ug';
+const MARZPAY_ACCESS_ID = process.env.MARZPAY_ACCESS_ID || '';
+const MARZPAY_ACCESS_TOKEN = process.env.MARZPAY_ACCESS_TOKEN || '';
+const MARZPAY_BASE_URL = process.env.MARZPAY_BASE_URL || 'https://wallet.wearemarz.com';
 
 const EGOSMS_USERNAME = process.env.EGOSMS_USERNAME || 'INFINITECH';
 const EGOSMS_PASSWORD = process.env.EGOSMS_PASSWORD || 'Moses,123##';
@@ -54,43 +53,39 @@ app.post('/api/disburse', authenticate, async (req, res) => {
 
     console.log(`💰 Disbursing UGX ${amount} to ${phone} for claim #${claim_id}`);
 
+    // MarzPay single-endpoint with module parameter
     const payload = {
-      merchant_id: MARZPAY_MERCHANT_ID,
-      phone_number: phone,
+      accessId: MARZPAY_ACCESS_ID,
+      accessToken: MARZPAY_ACCESS_TOKEN,
+      module: 'withdraw',
+      phone: phone,
       amount: parseInt(amount),
-      currency: 'UGX',
       reason: `Insurance Claim Payout - #${claim_id}`,
       reference: `JUB-CLAIM-${claim_id}`,
-      recipient_name: recipient_name || '',
-      transaction_type: 'disbursement',
+      narration: `Jubilee Insurance payout to ${recipient_name || phone}`,
     };
 
-    const response = await fetch(`${MARZPAY_BASE_URL}/api/v1/disbursements`, {
+    const response = await fetch(MARZPAY_BASE_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${MARZPAY_API_KEY}`,
-        'X-API-Secret': MARZPAY_API_SECRET,
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
 
     const data = await response.json();
     console.log(`💳 MarzPay response [${response.status}]:`, data);
 
-    if (response.status === 200 || response.status === 201 || response.status === 202) {
+    if (data.success || data.status === 'success' || response.status === 200) {
       return res.json({
         success: true,
-        transaction_id: data.transaction_id || data.id || '',
+        transaction_id: data.transactionId || data.transaction_id || data.id || '',
         message: data.message || 'Payment sent',
-        status: response.status === 202 ? 'pending' : 'completed',
+        status: data.status || 'completed',
       });
     }
 
-    return res.status(response.status).json({
+    return res.status(400).json({
       success: false,
-      message: data.message || 'Payment failed',
-      error: data.error || '',
+      message: data.message || data.error || 'Payment failed',
     });
   } catch (err) {
     console.error('❌ Disburse error:', err.message);
@@ -104,11 +99,17 @@ app.get('/api/transaction/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const response = await fetch(`${MARZPAY_BASE_URL}/api/v1/transactions/${id}/status`, {
-      headers: {
-        'Authorization': `Bearer ${MARZPAY_API_KEY}`,
-        'X-API-Secret': MARZPAY_API_SECRET,
-      },
+    const payload = {
+      accessId: MARZPAY_ACCESS_ID,
+      accessToken: MARZPAY_ACCESS_TOKEN,
+      module: 'transactionStatus',
+      transactionId: id,
+    };
+
+    const response = await fetch(MARZPAY_BASE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
 
     const data = await response.json();
@@ -123,11 +124,16 @@ app.get('/api/transaction/:id', authenticate, async (req, res) => {
 
 app.get('/api/balance', authenticate, async (req, res) => {
   try {
-    const response = await fetch(`${MARZPAY_BASE_URL}/api/v1/balance`, {
-      headers: {
-        'Authorization': `Bearer ${MARZPAY_API_KEY}`,
-        'X-API-Secret': MARZPAY_API_SECRET,
-      },
+    const payload = {
+      accessId: MARZPAY_ACCESS_ID,
+      accessToken: MARZPAY_ACCESS_TOKEN,
+      module: 'balance',
+    };
+
+    const response = await fetch(MARZPAY_BASE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
 
     const data = await response.json();
