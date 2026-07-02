@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 
 const app = express();
 app.use(cors());
@@ -56,7 +56,7 @@ app.post('/api/collect', authenticate, async (req, res) => {
     else if (!phone.startsWith('+')) phone = '+256' + phone;
 
     // Generate unique UUID reference
-    const reference = uuidv4();
+    const reference = crypto.randomUUID();
 
     console.log(`💰 Collecting UGX ${amount} from ${phone} | ref: ${reference}`);
 
@@ -110,7 +110,7 @@ app.post('/api/collect-card', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Missing amount' });
     }
 
-    const reference = uuidv4();
+    const reference = crypto.randomUUID();
 
     console.log(`💳 Card collection UGX ${amount} | ref: ${reference}`);
 
